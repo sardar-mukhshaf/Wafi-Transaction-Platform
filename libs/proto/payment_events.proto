@@ -1,0 +1,43 @@
+syntax = "proto3";
+
+package fabric.events;
+
+option go_package = "github.com/saudi-fabric/events;events";
+
+import "google/protobuf/timestamp.proto";
+
+message PaymentAuthorized {
+  string payment_id = 1;
+  string order_id = 2;
+  string correlation_id = 3;
+  double amount = 4;
+  string currency = 5;
+  string provider = 6;
+  string provider_reference = 7;
+  google.protobuf.Timestamp authorized_at = 8;
+}
+
+message PaymentCaptured {
+  string payment_id = 1;
+  string order_id = 2;
+  string correlation_id = 3;
+  double amount = 4;
+  google.protobuf.Timestamp captured_at = 5;
+}
+
+message PaymentFailed {
+  string payment_id = 1;
+  string order_id = 2;
+  string correlation_id = 3;
+  string reason = 4;
+  string error_code = 5;
+  google.protobuf.Timestamp failed_at = 6;
+}
+
+message PaymentRefunded {
+  string payment_id = 1;
+  string order_id = 2;
+  string correlation_id = 3;
+  double amount = 4;
+  google.protobuf.Timestamp refunded_at = 5;
+}

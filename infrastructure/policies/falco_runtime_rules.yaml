@@ -1,0 +1,74 @@
+# ------------------------------------------------------------------------------
+# Falco Runtime Security Rules
+# Tailored for Saudi Fabric microservices running on EKS
+# ------------------------------------------------------------------------------
+
+- rule: Unauthorized Shell in Container
+  desc: Detect shell execution inside production containers (indicates potential compromise)
+  condition: spawned_process and container and shell_procs and not user_known_exec_shell_activity
+  output: >
+    Shell spawned in container
+    user=%user.name command=%proc.cmdline
+    container=%container.name (%container.id)
+    k8s.ns=%k8s.ns.name k8s.pod=%k8s.pod.name
+  priority: CRITICAL
+  tags: [mitre_execution, container, samacompliance]
+
+- rule: Write to /etc or /usr
+  desc: Detect attempts to modify system directories inside containers
+  condition: >
+    write_etc_common or
+    (write_usr_dirs and container)
+  output: >
+    File written to system directory
+    fd.name=%fd.name command=%proc.cmdline
+    container=%container.name (%container.id)
+    k8s.ns=%k8s.ns.name k8s.pod=%k8s.pod.name
+  priority: CRITICAL
+  tags: [mitre_persistence, container, samacompliance]
+
+- rule: Outbound Connection from Sensitive Service
+  desc: Detect unexpected outbound connections from payment or identity services
+  condition: >
+    outbound and
+    container and
+    (k8s.pod.name contains "payment" or k8s.pod.name contains "identity") and
+    not (fd.sip in (trusted_cidrs))
+  output: >
+    Unexpected outbound connection from sensitive service
+    connection=%fd.name command=%proc.cmdline
+    container=%container.name (%container.id)
+    k8s.ns=%k8s.ns.name k8s.pod=%k8s.pod.name
+  priority: HIGH
+  tags: [mitre_exfiltration, container, samacompliance]
+
+- rule: Privilege Escalation via Sudo/Su
+  desc: Detect privilege escalation attempts inside containers
+  condition: >
+    spawned_process and
+    (proc.name in (sudo, su)) and
+    container
+  output: >
+    Privilege escalation attempt detected
+    user=%user.name command=%proc.cmdline
+    container=%container.name (%container.id)
+    k8s.ns=%k8s.ns.name k8s.pod=%k8s.pod.name
+  priority: CRITICAL
+  tags: [mitre_privilege_escalation, container, samacompliance]
+
+- rule: Sensitive File Access (Payment Data)
+  desc: Detect access to files that may contain PCI-DSS sensitive data
+  condition: >
+    open_read and
+    container and
+    (fd.name contains "/pci/" or fd.name contains ".vault" or fd.name contains "payment-card")
+  output: >
+    Sensitive file accessed
+    fd.name=%fd.name command=%proc.cmdline
+    user=%user.name container=%container.name (%container.id)
+    k8s.ns=%k8s.ns.name k8s.pod=%k8s.pod.name
+  priority: HIGH
+  tags: [mitre_collection, container, pci_dss, samacompliance]
+
+- list: trusted_cidrs
+  items: ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]

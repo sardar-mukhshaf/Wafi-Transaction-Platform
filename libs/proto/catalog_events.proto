@@ -1,0 +1,52 @@
+syntax = "proto3";
+
+package fabric.events;
+
+option go_package = "github.com/saudi-fabric/events;events";
+
+import "google/protobuf/timestamp.proto";
+
+message ProductCreated {
+  string product_id = 1;
+  string sku = 2;
+  string name_en = 3;
+  string name_ar = 4;
+  double base_price = 5;
+  string currency = 6;
+  int32 stock_quantity = 7;
+  google.protobuf.Timestamp created_at = 8;
+}
+
+message ProductPriceUpdated {
+  string product_id = 1;
+  double old_price = 2;
+  double new_price = 3;
+  string currency = 4;
+  google.protobuf.Timestamp updated_at = 5;
+}
+
+message ProductStockUpdated {
+  string product_id = 1;
+  string sku = 2;
+  int32 old_quantity = 3;
+  int32 new_quantity = 4;
+  string warehouse_id = 5;
+  google.protobuf.Timestamp updated_at = 6;
+}
+
+message InventoryReserved {
+  string reservation_id = 1;
+  string order_id = 2;
+  string product_id = 3;
+  string sku = 4;
+  int32 quantity = 5;
+  string warehouse_id = 6;
+  google.protobuf.Timestamp reserved_at = 7;
+}
+
+message InventoryReservationReleased {
+  string reservation_id = 1;
+  string order_id = 2;
+  string reason = 3;
+  google.protobuf.Timestamp released_at = 4;
+}

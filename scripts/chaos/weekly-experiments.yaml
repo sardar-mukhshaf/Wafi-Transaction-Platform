@@ -1,0 +1,166 @@
+# ------------------------------------------------------------------------------
+# LitmusChaos Experiments - Weekly Resilience Validation
+# ------------------------------------------------------------------------------
+# These experiments validate our architecture assumptions:
+# 1. Saga compensating transactions work when Payment Service fails
+# 2. Multi-AZ failover completes within 30 seconds
+# 3. Kafka outbox buffers events during broker outages
+# ------------------------------------------------------------------------------
+
+apiVersion: litmuschaos.io/v1alpha1
+kind: ChaosEngine
+metadata:
+  name: fabric-weekly-chaos
+  namespace: litmus
+spec:
+  appinfo:
+    appns: production
+    applabel: "app in (order-service, payment-service, catalog-service)"
+    appkind: deployment
+  # Do not stop chaos if application probe fails - we want to observe behavior
+  annotationCheck: "true"
+  engineState: "active"
+  # Run every Sunday at 02:00 KSA time
+  schedule:
+    type: cron
+    cron: "0 2 * * 0"
+    concurrencyPolicy: Forbid
+  experiments:
+    # Experiment 1: Payment Service Pod Failure
+    - name: pod-delete-payment
+      spec:
+        components:
+          env:
+            - name: TARGET_CONTAINER
+              value: "payment-service"
+            - name: CHAOS_INTERVAL
+              value: "60"
+            - name: TOTAL_CHAOS_DURATION
+              value: "300"
+            - name: FORCE
+              value: "false"
+        # Probes: verify saga compensation triggers
+        probes:
+          - name: order-status-probe
+            type: "cmdProbe"
+            mode: "Edge"
+            runProperties:
+              probeTimeout: "30s"
+              retry: 3
+              interval: "10s"
+            cmdProbe/inputs:
+              command: |
+                kubectl exec -it order-service-0 -- \
+                  curl -s http://localhost:8080/orders?status=PENDING_PAYMENT | jq '.count'
+              comparator:
+                type: int
+                criteria: "gt"
+                value: "0"
+              source: inline
+        # Expected behavior:
+        # - Orders in flight move to PENDING_PAYMENT
+        # - Outbox retains events for retry
+        # - No duplicate charges (idempotency keys protect)
+
+    # Experiment 2: Kafka Broker Partition
+    - name: pod-network-partition
+      spec:
+        components:
+          env:
+            - name: TARGET_CONTAINER
+              value: "kafka"
+            - name: CHAOS_INTERVAL
+              value: "30"
+            - name: TOTAL_CHAOS_DURATION
+              value: "180"
+            - name: DESTINATION_IPS
+              value: "10.0.0.0/8"
+        # Expected behavior:
+        # - Order Service outbox table grows (events buffered)
+        # - No data loss when connectivity restored
+        # - Consumer groups resume from last committed offset
+
+    # Experiment 3: Database Primary Failover
+    - name: pod-delete
+      spec:
+        components:
+          env:
+            - name: TARGET_CONTAINER
+              value: "postgres-order"
+            - name: CHAOS_INTERVAL
+              value: "10"
+            - name: TOTAL_CHAOS_DURATION
+              value: "60"
+            - name: FORCE
+              value: "false"
+        # Expected behavior:
+        # - Aurora automatic failover to reader (< 30s)
+        # - Application connection pool retries with backoff
+        # - No failed HTTP requests (Istio retries + circuit breaker)
+
+    # Experiment 4: Availability Zone Failure Simulation
+    - name: node-cpu-hog
+      spec:
+        components:
+          env:
+            - name: NODE_LABEL
+              value: "topology.kubernetes.io/zone=me-south-1a"
+            - name: CPU_CORES
+              value: "0"  # All cores
+            - name: TOTAL_CHAOS_DURATION
+              value: "120"
+        # Expected behavior:
+        # - Karpenter provisions nodes in 1b/1c
+        # - Istio shifts traffic away from degraded nodes
+        # - HPA scales up replicas in healthy zones
+
+    # Experiment 5: Network Latency Injection (Latency Chaos)
+    - name: network-latency
+      spec:
+        components:
+          env:
+            - name: TARGET_CONTAINER
+              value: "order-service"
+            - name: NETWORK_INTERFACE
+              value: "eth0"
+            - name: LIB_IMAGE
+              value: "litmuschaos/go-runner:latest"
+            - name: TC_IMAGE
+              value: "gaiadocker/iproute2"
+            - name: NETWORK_LATENCY
+              value: "5000"
+            - name: TOTAL_CHAOS_DURATION
+              value: "60"
+        # Expected behavior:
+        # - Istio retry policy triggers (3 retries with jitter)
+        # - Client timeouts handled gracefully
+        # - Circuit breaker opens if error rate > 50%
+
+---
+# Gremlin Alternative (SaaS) - Multi-region failure simulation
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: cross-region-latency
+  namespace: production
+spec:
+  action: delay
+  mode: all
+  selector:
+    namespaces:
+      - production
+    labelSelectors:
+      app: order-service
+  delay:
+    latency: "100ms"
+    correlation: "100"
+    jitter: "10ms"
+  direction: to
+  target:
+    selector:
+      namespaces:
+        - production
+      labelSelectors:
+        app: payment-service
+    mode: all
+  # Simulates Riyadh -> Dubai cross-region latency

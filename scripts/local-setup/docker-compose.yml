@@ -1,0 +1,244 @@
+version: "3.9"
+
+services:
+  # --- Kafka / Messaging Layer ---
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    hostname: zookeeper
+    container_name: fabric-zookeeper
+    ports:
+      - "2181:2181"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    networks:
+      - fabric-network
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    hostname: kafka
+    container_name: fabric-kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+    networks:
+      - fabric-network
+
+  schema-registry:
+    image: confluentinc/cp-schema-registry:7.5.0
+    hostname: schema-registry
+    container_name: fabric-schema-registry
+    depends_on:
+      - kafka
+    ports:
+      - "8081:8081"
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: kafka:29092
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+    networks:
+      - fabric-network
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: fabric-kafka-ui
+    depends_on:
+      - kafka
+      - schema-registry
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+      KAFKA_CLUSTERS_0_SCHEMAREGISTRY: http://schema-registry:8081
+    networks:
+      - fabric-network
+
+  # --- Data Layer ---
+  postgres-order:
+    image: postgres:15-alpine
+    container_name: fabric-postgres-order
+    environment:
+      POSTGRES_USER: order_user
+      POSTGRES_PASSWORD: order_pass
+      POSTGRES_DB: order_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-order-data:/var/lib/postgresql/data
+    networks:
+      - fabric-network
+
+  postgres-payment:
+    image: postgres:15-alpine
+    container_name: fabric-postgres-payment
+    environment:
+      POSTGRES_USER: payment_user
+      POSTGRES_PASSWORD: payment_pass
+      POSTGRES_DB: payment_db
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres-payment-data:/var/lib/postgresql/data
+    networks:
+      - fabric-network
+
+  postgres-catalog:
+    image: postgres:15-alpine
+    container_name: fabric-postgres-catalog
+    environment:
+      POSTGRES_USER: catalog_user
+      POSTGRES_PASSWORD: catalog_pass
+      POSTGRES_DB: catalog_db
+    ports:
+      - "5434:5432"
+    volumes:
+      - postgres-catalog-data:/var/lib/postgresql/data
+    networks:
+      - fabric-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: fabric-redis
+    ports:
+      - "6379:6379"
+    networks:
+      - fabric-network
+
+  # --- Observability ---
+  jaeger:
+    image: jaegertracing/all-in-one:1.48
+    container_name: fabric-jaeger
+    ports:
+      - "16686:16686"
+      - "4317:4317"
+      - "4318:4318"
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    networks:
+      - fabric-network
+
+  prometheus:
+    image: prom/prometheus:v2.47.0
+    container_name: fabric-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    networks:
+      - fabric-network
+
+  grafana:
+    image: grafana/grafana:10.1.0
+    container_name: fabric-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - grafana-data:/var/lib/grafana
+    networks:
+      - fabric-network
+
+  # --- Core Services (development builds) ---
+  order-service:
+    build:
+      context: ../../apps/order-service
+      dockerfile: Dockerfile.dev
+    container_name: fabric-order-service
+    depends_on:
+      - kafka
+      - postgres-order
+      - redis
+      - jaeger
+    environment:
+      APP_ENV: development
+      PORT: 8080
+      DB_HOST: postgres-order
+      DB_PORT: 5432
+      DB_USER: order_user
+      DB_PASSWORD: order_pass
+      DB_NAME: order_db
+      KAFKA_BROKERS: kafka:29092
+      KAFKA_SCHEMA_REGISTRY: http://schema-registry:8081
+      REDIS_ADDR: redis:6379
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
+    ports:
+      - "8082:8080"
+    networks:
+      - fabric-network
+
+  payment-service:
+    build:
+      context: ../../apps/payment-service
+      dockerfile: Dockerfile.dev
+    container_name: fabric-payment-service
+    depends_on:
+      - kafka
+      - postgres-payment
+      - redis
+      - jaeger
+    environment:
+      APP_ENV: development
+      PORT: 8080
+      DB_HOST: postgres-payment
+      DB_PORT: 5432
+      DB_USER: payment_user
+      DB_PASSWORD: payment_pass
+      DB_NAME: payment_db
+      KAFKA_BROKERS: kafka:29092
+      KAFKA_SCHEMA_REGISTRY: http://schema-registry:8081
+      REDIS_ADDR: redis:6379
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
+    ports:
+      - "8083:8080"
+    networks:
+      - fabric-network
+
+  catalog-service:
+    build:
+      context: ../../apps/catalog-service
+      dockerfile: Dockerfile.dev
+    container_name: fabric-catalog-service
+    depends_on:
+      - kafka
+      - postgres-catalog
+      - redis
+      - jaeger
+    environment:
+      APP_ENV: development
+      PORT: 8080
+      DB_HOST: postgres-catalog
+      DB_PORT: 5432
+      DB_USER: catalog_user
+      DB_PASSWORD: catalog_pass
+      DB_NAME: catalog_db
+      KAFKA_BROKERS: kafka:29092
+      KAFKA_SCHEMA_REGISTRY: http://schema-registry:8081
+      REDIS_ADDR: redis:6379
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
+    ports:
+      - "8084:8080"
+    networks:
+      - fabric-network
+
+volumes:
+  postgres-order-data:
+  postgres-payment-data:
+  postgres-catalog-data:
+  grafana-data:
+
+networks:
+  fabric-network:
+    driver: bridge

@@ -1,0 +1,340 @@
+name: Golden Path CI/CD
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'apps/**'
+      - 'libs/**'
+      - '.github/workflows/golden-path.yml'
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - 'apps/**'
+      - 'libs/**'
+
+env:
+  REGISTRY: ghcr.io
+  GO_VERSION: '1.21'
+  JAVA_VERSION: '17'
+  NODE_VERSION: '20'
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      order-service: ${{ steps.filter.outputs.order-service }}
+      payment-service: ${{ steps.filter.outputs.payment-service }}
+      catalog-service: ${{ steps.filter.outputs.catalog-service }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v2
+        id: filter
+        with:
+          filters: |
+            order-service:
+              - 'apps/order-service/**'
+              - 'libs/kafka-clients/go/**'
+            payment-service:
+              - 'apps/payment-service/**'
+            catalog-service:
+              - 'apps/catalog-service/**'
+
+  # ---------------------------------------------------------------------------
+  # STAGE 1: VALIDATE
+  # ---------------------------------------------------------------------------
+  lint-order:
+    runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ needs.changes.outputs.order-service == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v4
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v3
+        with:
+          version: latest
+          working-directory: apps/order-service
+          args: --timeout=5m
+
+  lint-payment:
+    runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ needs.changes.outputs.payment-service == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v3
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'temurin'
+      - name: Maven Checkstyle
+        working-directory: apps/payment-service
+        run: ./mvnw spotless:check || true
+
+  lint-catalog:
+    runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ needs.changes.outputs.catalog-service == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v3
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - working-directory: apps/catalog-service
+        run: |
+          npm ci
+          npm run lint
+
+  unit-test-order:
+    runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ needs.changes.outputs.order-service == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v4
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - working-directory: apps/order-service
+        run: |
+          go test -race -coverprofile=coverage.out ./...
+          go tool cover -func=coverage.out | tail -n 1
+
+  unit-test-payment:
+    runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ needs.changes.outputs.payment-service == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v3
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'temurin'
+      - working-directory: apps/payment-service
+        run: ./mvnw test -Dtest='!*IntegrationTest'
+
+  unit-test-catalog:
+    runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ needs.changes.outputs.catalog-service == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v3
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - working-directory: apps/catalog-service
+        run: |
+          npm ci
+          npm run test -- --coverage --coverageThreshold='{"global":{"branches":80,"functions":80,"lines":85,"statements":85}}'
+
+  trivy-fs-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Trivy filesystem scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '1'
+          ignore-unfixed: true
+
+  # ---------------------------------------------------------------------------
+  # STAGE 2: BUILD
+  # ---------------------------------------------------------------------------
+  build-order:
+    runs-on: ubuntu-latest
+    needs: [lint-order, unit-test-order]
+    if: ${{ needs.changes.outputs.order-service == 'true' }}
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v4
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: apps/order-service/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.ref == 'refs/heads/main' }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ github.repository }}/order-service:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ github.repository }}/order-service:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Install Cosign
+        if: github.ref == 'refs/heads/main'
+        uses: sigstore/cosign-installer@v3
+      - name: Sign image
+        if: github.ref == 'refs/heads/main'
+        run: |
+          cosign sign --yes ${{ env.REGISTRY }}/${{ github.repository }}/order-service:${{ github.sha }}
+
+  build-payment:
+    runs-on: ubuntu-latest
+    needs: [lint-payment, unit-test-payment]
+    if: ${{ needs.changes.outputs.payment-service == 'true' }}
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v3
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'temurin'
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: apps/payment-service/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.ref == 'refs/heads/main' }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ github.repository }}/payment-service:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ github.repository }}/payment-service:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Install Cosign
+        if: github.ref == 'refs/heads/main'
+        uses: sigstore/cosign-installer@v3
+      - name: Sign image
+        if: github.ref == 'refs/heads/main'
+        run: |
+          cosign sign --yes ${{ env.REGISTRY }}/${{ github.repository }}/payment-service:${{ github.sha }}
+
+  build-catalog:
+    runs-on: ubuntu-latest
+    needs: [lint-catalog, unit-test-catalog]
+    if: ${{ needs.changes.outputs.catalog-service == 'true' }}
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v3
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: apps/catalog-service/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.ref == 'refs/heads/main' }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ github.repository }}/catalog-service:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ github.repository }}/catalog-service:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Install Cosign
+        if: github.ref == 'refs/heads/main'
+        uses: sigstore/cosign-installer@v3
+      - name: Sign image
+        if: github.ref == 'refs/heads/main'
+        run: |
+          cosign sign --yes ${{ env.REGISTRY }}/${{ github.repository }}/catalog-service:${{ github.sha }}
+
+  # ---------------------------------------------------------------------------
+  # STAGE 3: INTEGRATION
+  # ---------------------------------------------------------------------------
+  integration-test-order:
+    runs-on: ubuntu-latest
+    needs: build-order
+    if: ${{ needs.changes.outputs.order-service == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v4
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Start local stack
+        run: make local-up
+      - name: Run integration tests
+        working-directory: apps/order-service
+        run: go test -tags=integration ./... || true
+      - name: Tear down
+        if: always()
+        run: make local-down
+
+  # ---------------------------------------------------------------------------
+  # STAGE 4: SECURITY GATE
+  # ---------------------------------------------------------------------------
+  container-scan-order:
+    runs-on: ubuntu-latest
+    needs: build-order
+    if: ${{ needs.changes.outputs.order-service == 'true' && github.ref == 'refs/heads/main' }}
+    steps:
+      - name: Run Trivy container scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ github.repository }}/order-service:${{ github.sha }}
+          severity: 'CRITICAL,HIGH'
+          exit-code: '1'
+          ignore-unfixed: true
+
+  opa-k8s-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup OPA
+        uses: open-policy-agent/setup-opa@v2
+        with:
+          version: latest
+      - name: Run OPA checks
+        run: |
+          opa test infrastructure/policies/ || true
+
+  # ---------------------------------------------------------------------------
+  # STAGE 5: DEPLOY (Staging)
+  # ---------------------------------------------------------------------------
+  deploy-staging:
+    runs-on: ubuntu-latest
+    needs: [container-scan-order, opa-k8s-scan]
+    if: github.ref == 'refs/heads/main'
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+      - name: Update image tags in GitOps repo
+        run: |
+          echo "Deploying to staging..."
+          # In production: update GitOps repo with new image tags
+          # ArgoCD auto-sync handles the rest

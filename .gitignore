@@ -1,0 +1,55 @@
+# Dependencies
+node_modules/
+vendor/
+target/
+*.jar
+
+# Build outputs
+dist/
+build/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Terraform
+*.tfstate
+*.tfstate.*.backup
+*.tfstate.backup
+*.tfvars
+.terraform/
+.terraform.lock.hcl
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Go
+*.out
+coverage.out
+
+# Java
+.mvn/
+mvnw
+mvnw.cmd
+.classpath
+.project
+.settings/
+
+# Logs
+*.log
+logs/
+
+# Local development
+scripts/local-setup/postgres-*-data/
+scripts/local-setup/grafana-data/
+tilt_modules/

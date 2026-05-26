@@ -1,0 +1,108 @@
+# Saudi Distributed Commerce & Settlement Fabric - Local Development
+# ------------------------------------------------------------------------------
+# Usage: cd scripts/local-setup && tilt up
+# ------------------------------------------------------------------------------
+
+# Allow parallel updates
+update_settings(max_parallel_updates=3)
+
+# Load Docker Compose for dependencies
+docker_compose("./docker-compose.yml")
+
+# Wait for dependencies to be healthy
+local_resource(
+    name="deps-ready",
+    cmd="""
+        echo "Waiting for Kafka..."
+        until nc -z localhost 9092; do sleep 1; done
+        echo "Waiting for Postgres (order)..."
+        until nc -z localhost 5432; do sleep 1; done
+        echo "Waiting for Postgres (payment)..."
+        until nc -z localhost 5433; do sleep 1; done
+        echo "Waiting for Postgres (catalog)..."
+        until nc -z localhost 5434; do sleep 1; done
+        echo "Waiting for Redis..."
+        until nc -z localhost 6379; do sleep 1; done
+        echo "All dependencies ready!"
+    """,
+    labels=["infrastructure"]
+)
+
+# Order Service
+docker_build(
+    "fabric/order-service",
+    "../../apps/order-service",
+    dockerfile="../../apps/order-service/Dockerfile.dev",
+    live_update=[
+        sync("../../apps/order-service", "/app"),
+        run("go build -o order-service .", trigger=["../../apps/order-service/**/*.go"]),
+        restart_container()
+    ]
+)
+
+k8s_resource(
+    workload="order-service",
+    port_forwards="8082:8080",
+    resource_deps=["deps-ready"],
+    labels=["services"]
+)
+
+# Payment Service
+docker_build(
+    "fabric/payment-service",
+    "../../apps/payment-service",
+    dockerfile="../../apps/payment-service/Dockerfile.dev",
+    live_update=[
+        sync("../../apps/payment-service/src", "/app/src"),
+        sync("../../apps/payment-service/pom.xml", "/app/pom.xml"),
+        run("mvn compile", trigger=["../../apps/payment-service/src/**/*.java"])
+    ]
+)
+
+k8s_resource(
+    workload="payment-service",
+    port_forwards="8083:8080",
+    resource_deps=["deps-ready"],
+    labels=["services"]
+)
+
+# Catalog Service
+docker_build(
+    "fabric/catalog-service",
+    "../../apps/catalog-service",
+    dockerfile="../../apps/catalog-service/Dockerfile.dev",
+    live_update=[
+        sync("../../apps/catalog-service/src", "/app/src"),
+        sync("../../apps/catalog-service/package.json", "/app/package.json"),
+        run("npm install", trigger=["../../apps/catalog-service/package.json"]),
+        restart_container()
+    ]
+)
+
+k8s_resource(
+    workload="catalog-service",
+    port_forwards="8084:8080",
+    resource_deps=["deps-ready"],
+    labels=["services"]
+)
+
+# Local resource for API testing
+local_resource(
+    name="api-test",
+    cmd="""
+        echo "=== Fabric Local Stack ==="
+        echo "Order Service:    http://localhost:8082"
+        echo "Payment Service:  http://localhost:8083"
+        echo "Catalog Service:  http://localhost:8084"
+        echo "Kafka UI:         http://localhost:8080"
+        echo "Grafana:          http://localhost:3000"
+        echo "Jaeger:           http://localhost:16686"
+        echo "Prometheus:       http://localhost:9090"
+        echo ""
+        echo "Create an order:"
+        echo 'curl -X POST http://localhost:8082/orders -H "Content-Type: application/json" -d \'{"customer_id":"cust-123","currency":"SAR","items":[{"product_id":"prod-1","sku":"SKU001","quantity":2,"unit_price":150.00}]}\''
+    """,
+    auto_init=False,
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    labels=["utils"]
+)

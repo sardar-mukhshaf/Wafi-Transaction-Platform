@@ -1,0 +1,103 @@
+replicaCount: 2
+
+image:
+  repository: ghcr.io/saudi-fabric/order-service
+  pullPolicy: IfNotPresent
+  tag: "latest"
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations:
+    eks.amazonaws.com/role-arn: ""
+  name: ""
+
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "8080"
+  prometheus.io/path: "/metrics"
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65534
+  fsGroup: 65534
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+service:
+  type: ClusterIP
+  port: 8080
+
+ingress:
+  enabled: false
+
+resources:
+  limits:
+    cpu: 1000m
+    memory: 512Mi
+  requests:
+    cpu: 250m
+    memory: 256Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+                  - order-service
+          topologyKey: topology.kubernetes.io/zone
+
+env:
+  APP_ENV: production
+  PORT: "8080"
+  DB_HOST: postgres-order
+  DB_PORT: "5432"
+  DB_USER: order_user
+  DB_NAME: order_db
+  KAFKA_BROKERS: kafka:9092
+  KAFKA_SCHEMA_REGISTRY: http://schema-registry:8081
+  REDIS_ADDR: redis:6379
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector.monitoring:4317
+
+envFromSecrets:
+  DB_PASSWORD:
+    secretName: order-service-db
+    key: password
+
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 8080
+  initialDelaySeconds: 10
+  periodSeconds: 10
+
+readinessProbe:
+  httpGet:
+    path: /ready
+    port: 8080
+  initialDelaySeconds: 5
+  periodSeconds: 5

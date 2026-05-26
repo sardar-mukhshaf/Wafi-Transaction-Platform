@@ -1,0 +1,118 @@
+# ------------------------------------------------------------------------------
+# Istio PeerAuthentication - STRICT mTLS across all workloads
+# ------------------------------------------------------------------------------
+# This enforces zero-trust: no plaintext traffic between services.
+# Applied at the namespace level; individual services can opt out with
+# a more specific PeerAuthentication if absolutely necessary (documented in ADR).
+# ------------------------------------------------------------------------------
+
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: default
+  namespace: production
+spec:
+  mtls:
+    mode: STRICT
+---
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: default
+  namespace: staging
+spec:
+  mtls:
+    mode: STRICT
+---
+# AuthorizationPolicy: Only Order Service can initiate payments
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: payment-service-access
+  namespace: production
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: payment-service
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            principals: ["cluster.local/ns/production/sa/order-service"]
+      to:
+        - operation:
+            methods: ["POST"]
+            paths: ["/api/v1/payments/*"]
+    - from:
+        - source:
+            principals: ["cluster.local/ns/production/sa/audit-service"]
+      to:
+        - operation:
+            methods: ["GET"]
+            paths: ["/api/v1/payments/*"]
+---
+# AuthorizationPolicy: Only authenticated users can access catalog
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: catalog-service-access
+  namespace: production
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: catalog-service
+  action: ALLOW
+  rules:
+    - to:
+        - operation:
+            methods: ["GET"]
+            paths: ["/products/*", "/health"]
+    - from:
+        - source:
+            principals: ["cluster.local/ns/production/sa/order-service"]
+      to:
+        - operation:
+            methods: ["POST", "PUT", "DELETE"]
+            paths: ["/products/*"]
+---
+# Circuit Breaker + Retry policy for inter-service calls
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: order-service-circuit-breaker
+  namespace: production
+spec:
+  host: order-service.production.svc.cluster.local
+  trafficPolicy:
+    connectionPool:
+      tcp:
+        maxConnections: 100
+      http:
+        http1MaxPendingRequests: 50
+        http2MaxRequests: 100
+        maxRequestsPerConnection: 10
+    outlierDetection:
+      consecutiveErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+    loadBalancer:
+      simple: LEAST_CONN
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: order-service-retries
+  namespace: production
+spec:
+  hosts:
+    - order-service.production.svc.cluster.local
+  http:
+    - route:
+        - destination:
+            host: order-service.production.svc.cluster.local
+      retries:
+        attempts: 3
+        perTryTimeout: 2s
+        retryOn: gateway-error,connect-failure,refused-stream
+      timeout: 10s
