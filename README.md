@@ -4,6 +4,33 @@
 
 ---
 
+## How the Code Works (Step-by-Step Process)
+Here is a simple breakdown of what happens in the code when a customer buys something:
+
+1. **Identity Service**: A customer logs into the platform securely.
+2. **Catalog Service**: The customer browses items, getting instant product details and prices.
+3. **Inventory Service**: When the customer wants to buy, this service checks the warehouse and temporarily holds the item so nobody else can buy it.
+4. **Order Service**: This is the "manager" of the checkout process. It takes the order and orchestrates the next steps.
+5. **Payment Service**: It securely talks to banks (like MADA or Apple Pay) to charge the customer's card safely.
+6. **Settlement Service**: At the end of the day, it calculates who gets paid what (e.g., taxes, seller payouts).
+7. **Notification Service**: It sends an SMS or email saying "Your order is confirmed!"
+
+Behind the scenes: The **Audit Service** records every single action for legal reasons, and the **Fraud Service** constantly monitors for suspicious activity.
+
+## What Does This Project Actually Do? (In Simple Words)
+Imagine you are building a massive online shopping mall (like noon.com or Amazon). 
+
+This project is **not** the website buttons or the pretty pictures you see. Instead, it is the **invisible engine room** running behind the scenes. 
+
+It handles the extremely hard parts of running a massive online mall across multiple countries:
+- Making sure millions of people can buy things at the exact same time without the website crashing.
+- Keeping hackers out and protecting credit card numbers.
+- Following all the strict legal and banking rules of Saudi Arabia.
+
+In short, it provides the foundational code and blueprint to build a huge, safe, and lightning-fast online marketplace.
+
+---
+
 ## Table of Contents
 
 1. [What Is This?](#what-is-this)
