@@ -1,4 +1,4 @@
-# Saudi Distributed Commerce & Settlement Fabric
+# Wafi Transaction Platform
 
 > **Reference Architecture** — A SAMA-compliant, multi-region, event-driven distributed commerce platform handling 10M+ daily transactions across KSA, UAE, and Bahrain. Built as a production-grade portfolio piece demonstrating senior/staff-level microservices, DevOps, and platform engineering capabilities.
 
